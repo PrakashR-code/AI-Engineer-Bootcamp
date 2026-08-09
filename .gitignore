@@ -1,0 +1,12 @@
+.venv/
+.venv/**
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.vscode/
+index.faiss
+*.sqlite3
+.DS_Store
+*.log
