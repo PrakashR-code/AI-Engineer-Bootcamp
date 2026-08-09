@@ -10,3 +10,4 @@ class InterviewResponse(BaseModel):
     banking_example: str
 
     interview_question: str
+    best_answer: str

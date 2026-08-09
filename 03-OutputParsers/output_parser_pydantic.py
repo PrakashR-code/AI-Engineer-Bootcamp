@@ -1,16 +1,17 @@
+from pydantic import BaseModel
+
 from langchain_core.prompts import PromptTemplate
-from langchain_ollama import ChatOllama
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, Field
-from typing import List
+from langchain_ollama import ChatOllama
+
 
 class InterviewResponse(BaseModel):
-    topic: str = Field(description="The topic")
-    definition: str = Field(description="Short definition")
-    advantages: List[str] = Field(description="List of advantages")
-    banking_example: str = Field(description="Banking example")
-    interview_question: str = Field(description="Interview question")
+    topic: str
+    definition: str
+    banking_example: str
+    interview_question: str
+    best_answer: str
+
 
 print("1. Program Started")
 
@@ -18,73 +19,63 @@ parser = PydanticOutputParser(
     pydantic_object=InterviewResponse
 )
 
-prompt = PromptTemplate.from_template("""
-You are a JSON API.
+prompt = PromptTemplate.from_template(
+"""
+You are a Senior Java Interviewer.
 
-Return ONLY one valid JSON object.
-Do not add explanations.
-Do not add markdown.
-Do not use code fences.
-Do not add any text before or after the JSON.
+Generate ACTUAL DATA about this topic:
 
 Topic: {topic}
 
-Return exactly this structure:
+IMPORTANT:
+- Return an INSTANCE matching the schema below.
+- Populate every field with actual values.
+- DO NOT return the JSON schema itself.
+- DO NOT return fields such as "properties", "title", "type", or "description" as schema metadata.
+- DO NOT add markdown or explanations outside the JSON.
+- Return only the populated object.
 
-{{
-  "topic": "{topic}",
-  "definition": "short definition",
-  "advantages": [
-    "advantage 1",
-    "advantage 2",
-    "advantage 3"
-  ],
-  "banking_example":"some",
-  "interview_question":"somne"
-}}
+{format_instructions}
 """,
-
-    input_variables=["topic"],
-
     partial_variables={
-        "format_instructions":
-        parser.get_format_instructions()
-    })
+        "format_instructions": parser.get_format_instructions()
+    }
+)
 
 print("2. Prompt Created")
 
-llm = ChatOllama(model="llama3.2",
-    temperature=1)
+llm = ChatOllama(
+    model="llama3.2",
+    temperature=0
+)
 
 print("3. LLM Created")
-
-
 
 chain = prompt | llm | parser
 
 print("4. Calling LLM...")
 
 response = chain.invoke(
-    {
-        "topic":"Java Streams"
-    }
+    {"topic": "Java Streams"}
 )
 
 print("\n5. Response Type")
 print(type(response))
 
-print("\n6. Complete Response")
+print("\n6. Complete Object")
 print(response)
 
-print("\n7. Only Content")
-#print(response["topic"])
+print("\n7. Topic")
+print(response.topic)
 
 print("\n8. Definition")
-#print(response["definition"])
+print(response.definition)
 
-print("\n9. Advantages")
-#print(response["advantages"])
+print("\n9. Banking Example")
+print(response.banking_example)
 
+print("\n10. Interview Question")
+print(response.interview_question)
 
-
-
+print("\n11. Best Answer")
+print(response.best_answer)
