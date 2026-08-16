@@ -1,0 +1,41 @@
+{
+	"folders": [
+		{
+			"path": "../Python"
+		},
+		{
+			"path": "../AI ML/capstone"
+		},
+		{
+			"name": "LLM_Learning",
+			"path": "../Python/LLM_Learning"
+		},
+		{
+			"name": "pdf-ai-assistant",
+			"path": "../Python/pdf-ai-assistant"
+		},
+		{
+			"path": "../Java"
+		}
+	],
+	"settings": {
+		"python-envs.pythonProjects": [
+			{
+				"path": ".",
+				"envManager": "ms-python.python:venv",
+				"packageManager": "ms-python.python:pip"
+			},
+			{
+				"path": "LLM",
+				"envManager": "ms-python.python:venv",
+				"packageManager": "ms-python.python:pip",
+				"workspace": "Python"
+			}
+		]
+	},
+	"extensions": {
+		"recommendations": [
+			"google.geminicodeassist"
+		]
+	}
+}
