@@ -1,0 +1,35 @@
+[
+  {
+    "id": "lambda_definition",
+    "question": "What is a lambda expression?",
+    "expected_to_abstain": false,
+    "expected_concept_groups": [
+      ["anonymous", "nameless"],
+      ["function"]
+    ]
+  },
+  {
+    "id": "functional_interface",
+    "question": "What is a functional interface?",
+    "expected_to_abstain": false,
+    "expected_concept_groups": [
+      ["single abstract method", "sam"],
+      ["interface"]
+    ]
+  },
+  {
+    "id": "lambda_advantages",
+    "question": "What are the advantages of lambda expressions?",
+    "expected_to_abstain": false,
+    "expected_concept_groups": [
+      ["readability", "length of the code", "concise"],
+      ["anonymous inner class", "complexity"]
+    ]
+  },
+  {
+    "id": "kubernetes_abstention",
+    "question": "What is Kubernetes architecture?",
+    "expected_to_abstain": true,
+    "expected_concept_groups": []
+  }
+]
