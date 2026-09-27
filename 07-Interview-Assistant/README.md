@@ -1,75 +1,99 @@
 # AI Interview Preparation Assistant
 
-A local Retrieval-Augmented Generation (RAG) application for asking interview questions against PDF notes. It uses local Ollama models, LangChain components, and a persistent Chroma vector database. The language model is instructed to answer only from retrieved document text and to abstain when that text does not contain the answer.
+A local, document-grounded interview preparation assistant built with Python, LangChain, Ollama, Chroma, and Streamlit. It indexes PDF study material, retrieves the most relevant passages for a question, and asks a local language model to answer from those passages. The interface exposes source pages and retrieved evidence so users can inspect the material behind an answer.
 
-## Memory map
+## Problem
 
-```text
-ingest.py = PDF -> Chunk -> Embed -> Store
-app.py    = Question -> Retrieve -> Context -> LLM -> Answer
+Interview notes are often spread across long PDFs, making focused revision and source checking slow. This project turns those PDFs into a searchable knowledge base and provides concise answers tied to retrieved text. If the supplied context does not support an answer, the prompt instructs the model to return a fixed abstention response rather than use outside knowledge.
 
-INDEXING = Prepare knowledge (offline, run when documents change)
-QUERYING = Use knowledge    (online, run for user questions)
+## Features
+
+- Upload and index one or more PDFs through Streamlit, or index PDFs already in `data/` with `ingest.py`.
+- Split page-level PDF documents into overlapping chunks and store them persistently in Chroma.
+- Add uploaded chunks to an existing Chroma collection; the first upload creates it.
+- Retrieve the configured top three chunks for each question.
+- Generate interview-oriented answers with a local Ollama chat model and a context-only prompt.
+- Display PDF filename and page metadata and inspect the exact retrieved text in the UI.
+- Run a console question loop with `app.py` or use the browser UI with `streamlit_app.py`.
+- Evaluate retrieval count, metadata, evidence concepts, answer concepts, and the exact abstention sentence using `evaluate.py` and `evaluation_cases.json`.
+
+## Architecture
+
+### Indexing
+
+```mermaid
+flowchart LR
+    A[PDF files in data/ or Streamlit uploads] --> B[PyPDFLoader]
+    B --> C[Page-level LangChain Documents]
+    C --> D[RecursiveCharacterTextSplitter\nchunk size 500, overlap 100]
+    D --> E[OllamaEmbeddings\nnomic-embed-text]
+    E --> F[Chroma collection\ninterview_assistant]
+    F --> G[(Persistent vector_db/)]
 ```
 
-## What the project demonstrates
+### Question answering
 
-- Loading one or more PDFs as LangChain `Document` objects
-- Splitting long pages into overlapping chunks
-- Converting chunks and questions into semantic vectors
-- Persisting and reusing a Chroma collection
-- Retrieving the top three closest chunks for each question
-- Building an LCEL generation chain (`prompt | model | parser`)
-- Grounding answers in retrieved context and abstaining when unsupported
-- Showing source filename and page metadata without retrieving twice
+```mermaid
+flowchart LR
+    Q[User question] --> R[Retriever\nTOP_K = 3]
+    DB[(Persistent Chroma)] --> R
+    R --> DOCS[Retrieved Document chunks]
+    DOCS --> CTX[format_docs\njoin page_content]
+    Q --> P[INTERVIEW_PROMPT]
+    CTX --> P
+    P --> LLM[ChatOllama\nllama3.2, temperature 0]
+    LLM --> PARSE[StrOutputParser]
+    PARSE --> A[Answer]
+    DOCS --> SRC[Source filename and page]
+    DOCS --> EVID[Retrieved evidence view]
+```
 
-This is the August V1 learning project. Agents, LangGraph, and Streamlit are intentionally outside its scope.
+Indexing and querying are separate operations. Indexing embeds document chunks and persists them. At query time, the same embedding model embeds the question for similarity search; the stored PDF chunks are not re-embedded. Retrieval supplies candidate evidence, and the prompt tells the model to use only the supplied context.
 
-## Technology and purpose
+## End-to-end execution
 
-| Component | Purpose |
+1. `load_documents(DATA_PATH)` recursively discovers `*.pdf` files and loads page-level documents with `PyPDFLoader`.
+2. `split_documents(documents)` uses `RecursiveCharacterTextSplitter` with `CHUNK_SIZE=500` and `CHUNK_OVERLAP=100`. The source and page metadata accompany the chunks.
+3. `create_vector_store(chunks)` embeds the chunks through `OllamaEmbeddings(model="nomic-embed-text")` and stores text, vectors, and metadata in the `interview_assistant` Chroma collection at `vector_db/`.
+4. For a question, `get_retriever()` opens that collection and configures `k=TOP_K` (3). `retriever.invoke(question)` embeds the query and retrieves the closest chunks.
+5. `format_docs(retrieved_docs)` joins the chunk text. The question and context are passed to the generation chain.
+6. `INTERVIEW_PROMPT | ChatOllama(...) | StrOutputParser()` produces a plain-text answer. The prompt specifies an exact fallback: `The provided documents do not contain this information.`
+7. The same retrieved documents provide source metadata and, in Streamlit, the evidence text. There is no second retrieval for citations.
+
+## Components
+
+| File/module | Responsibility |
 |---|---|
-| Python | Application language and command-line interface |
-| LangChain | Common `Document`, prompt, retriever, and chain abstractions |
-| LCEL | Composes the generation pipeline with the `|` operator |
-| `PyPDFLoader` | Extracts PDF text into page-level `Document` objects |
-| `RecursiveCharacterTextSplitter` | Produces manageable, overlapping chunks while preferring natural text boundaries |
-| `OllamaEmbeddings` / `nomic-embed-text` | Creates vectors for document chunks and new questions |
-| Chroma | Stores vectors, chunk text, and metadata persistently and performs similarity search |
-| `ChatOllama` / `llama3.2` | Generates an interview-friendly answer from the supplied context |
-| `PromptTemplate` | Inserts `{context}` and `{question}` into the grounding instructions |
-| `StrOutputParser` | Converts the model response object into a plain Python string |
+| `streamlit_app.py` | PDF upload, index status, question input, answer/source/evidence display; coordinates shared backend functions. |
+| `app.py` | Interactive command-line question loop; retrieves once, generates an answer, and prints source filename/page. |
+| `ingest.py` | Offline indexing entry point for PDFs already in `data/`. |
+| `evaluate.py` | Runs the JSON evaluation cases, with optional single-case and retrieval-only modes. |
+| `evaluation_cases.json` | Positive Java concept cases and a Kubernetes abstention case. |
+| `src/config.py` | Relative data/index paths, chunking values, top-k, and model names. |
+| `src/document_loader.py` | Recursive PDF discovery and page-level loading. |
+| `src/text_splitter.py` | Configured document chunking. |
+| `src/vector_store.py` | Ollama embeddings and Chroma create/load/add operations. |
+| `src/retriever.py` | Loads the persistent store and creates a top-k retriever. |
+| `src/prompts.py` | Context-grounding, response-format, and abstention instructions. |
+| `src/rag_chain.py` | Context formatting and LCEL generation chain. |
+| `src/utils.py` | Legacy helper for sampling `.txt` files; not used by the PDF RAG flow. |
+| `data/` | PDF source material. |
+| `vector_db/` | Persistent Chroma data created by indexing. |
 
-Everything can run locally after the required Ollama models have been downloaded. No OpenAI API key is used by the current implementation.
+## Technologies
 
-## Project structure
+- **Python** for application and evaluation scripts.
+- **LangChain** abstractions: `Document`, `PyPDFLoader`, `RecursiveCharacterTextSplitter`, `PromptTemplate`, retriever, and LCEL.
+- **Ollama** for local inference: `nomic-embed-text` embeddings and `llama3.2` chat generation.
+- **Chroma** (`langchain-chroma`) for persistent vector storage and similarity search.
+- **Streamlit** for the upload, status, question-answering, and evidence interface.
+- **PyPDF** via `PyPDFLoader` for PDF text extraction.
 
-```text
-07-Interview-Assistant/
-|-- data/                    # Input PDF files
-|-- vector_db/               # Persistent Chroma database generated by ingestion
-|-- src/
-|   |-- __init__.py          # Marks src as a Python package
-|   |-- config.py            # Paths, model names, chunk settings, and top-k
-|   |-- document_loader.py   # PDF discovery and page-level loading
-|   |-- text_splitter.py     # Page Documents -> overlapping chunk Documents
-|   |-- vector_store.py      # Embedding model and Chroma create/load operations
-|   |-- retriever.py         # Chroma retriever configured with k=3
-|   |-- prompts.py           # Grounded interview-answer PromptTemplate
-|   |-- rag_chain.py         # Context formatting and LCEL generation chain
-|   `-- utils.py             # Older text-sample helper; not used by the PDF RAG flow
-|-- tests/
-|   |-- __init__.py
-|   `-- test_smoke.py        # Older FastAPI scaffold test; see Current project notes
-|-- ingest.py                # Offline indexing entry point
-|-- app.py                   # Interactive query entry point
-|-- requirements.txt         # Python dependency declarations; see setup note below
-`-- README.md                # Architecture and operating reference
-```
+No API key is configured or used in the current implementation. Ollama must be running locally with both configured models available.
 
 ## Configuration
 
-`src/config.py` is the single place for the main settings:
+The current settings are constants in `src/config.py`; there is no `.env` configuration in the code.
 
 ```python
 DATA_PATH = "data"
@@ -83,733 +107,124 @@ EMBEDDING_MODEL = "nomic-embed-text"
 LLM_MODEL = "llama3.2"
 ```
 
-- `CHUNK_SIZE=500`: target maximum chunk length used by the splitter (measured in characters with the current default length function).
-- `CHUNK_OVERLAP=100`: repeats boundary text between adjacent chunks to reduce loss of meaning at a split.
-- `TOP_K=3`: retrieves three closest stored chunks per question.
-- `EMBEDDING_MODEL=nomic-embed-text`: must remain consistent between indexing and querying so vectors share the same semantic space.
-- `LLM_MODEL=llama3.2`: local model used for answer generation.
+Paths are relative to the current working directory. Run commands from the repository root. Keep the embedding model consistent between indexing and querying so vectors remain in the same embedding space.
 
-Paths are relative to the project directory, so run commands from `07-Interview-Assistant`.
+## Setup
 
-## Complete architecture
+Prerequisites: Python 3.10 or newer, [Ollama](https://ollama.com/) installed and running, and sufficient local resources for the selected models.
 
-The system deliberately has two separate phases.
+Create and activate a virtual environment, then install the packages imported by the current source:
 
-### 1. Offline/indexing architecture
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install langchain langchain-community langchain-text-splitters langchain-ollama langchain-chroma chromadb pypdf streamlit
+```
+
+Download the configured Ollama models:
+
+```powershell
+ollama pull nomic-embed-text
+ollama pull llama3.2
+```
+
+The checked-in `requirements.txt` is inherited from an earlier scaffold and does not currently declare all dependencies imported by the application (including Streamlit and the LangChain integrations above). The installation command above reflects the imports in this repository. Aligning the requirements file with those imports is a useful repository maintenance task.
+
+## Run
+
+### Streamlit interface
+
+```powershell
+python -m streamlit run streamlit_app.py
+```
+
+Choose one or more PDFs and click **Upload & Index**. The files are saved in `data/` and their chunks are added to the persistent collection. Enter a question and click **Get Answer** to view the answer, source pages, and retrieved evidence.
+
+### Command-line interface
+
+Put PDFs under `data/`, create the index, then start the console assistant:
+
+```powershell
+python ingest.py
+python app.py
+```
+
+Type a question at the prompt; enter `exit` to quit. Both commands take no arguments. The CLI expects an index to exist before questions can be answered.
+
+### Evaluation
+
+The evaluation script expects an existing vector index and Ollama access. It checks retrieval count and metadata, concept presence in retrieved evidence and generated answers, and exact abstention for the negative case. These are lightweight deterministic string checks, not a comprehensive quality benchmark.
+
+```powershell
+python evaluate.py
+python evaluate.py --retrieval-only
+python evaluate.py --case functional_interface
+python evaluate.py --cases path\to\cases.json
+```
+
+`--retrieval-only` skips generation; `--case` selects a case ID; `--cases` selects a JSON case file. The script exits with code 1 if any selected check fails.
+
+## Example interaction
+
+With Java interview PDFs indexed, a supported question such as:
 
 ```text
-data/**/*.pdf
-      |
-      v
-load_documents(DATA_PATH)
-  Path.rglob("*.pdf") + PyPDFLoader
-      |
-      v
-page-level Document objects
-  page_content: extracted page text
-  metadata: source path, page/page_label, ...
-      |
-      v
-split_documents(documents)
-  RecursiveCharacterTextSplitter(500, overlap=100)
-      |
-      v
-chunk Document objects
-  smaller page_content + inherited metadata
-      |
-      v
-create_vector_store(chunks)
-  OllamaEmbeddings("nomic-embed-text")
-      |
-      v
-one embedding vector per chunk
-      |
-      v
-Chroma.from_documents(...)
-  collection: interview_assistant
-      |
-      v
-vector_db/ (persistent storage)
-  vectors + chunk text + metadata
+What is a functional interface?
 ```
 
-`ingest.py` coordinates this phase:
-
-1. `load_documents(DATA_PATH)` recursively finds PDFs and loads every page.
-2. `split_documents(documents)` turns page-sized Documents into overlapping chunk Documents.
-3. `create_vector_store(chunks)` embeds each chunk and inserts it into persistent Chroma.
-4. The script prints the number of indexed chunks.
-
-An illustrative tested run with `22. JAVA 8 Features.pdf` produced **37 page Documents** and **140 chunks**. These numbers describe that PDF/run; other documents will produce different counts.
-
-Important distinction: Chroma stores the resulting embedding vectors, chunk text, and metadata. It does **not** store `PyPDFLoader`, the splitter, splitting rules, or the splitting process. The application must repeat loading and splitting when rebuilding or incorporating changed source documents.
-
-### 2. Online/query architecture
-
-```text
-User question
-      |
-      v
-get_retriever()
-  load_vector_store() -> Chroma(... existing collection ...)
-      |
-      v
-Retriever.invoke(question)
-  embed question with nomic-embed-text
-      |
-      v
-compare query vector with stored chunk vectors
-      |
-      v
-Top-3 closest Document chunks
-      |                         \
-      |                          `-> metadata -> filename + page
-      v
-format_docs(retrieved_docs)
-  join page_content with blank lines
-      |
-      v
-one context string + original question
-      |
-      v
-PromptTemplate (grounding rules)
-      |
-      v
-ChatOllama("llama3.2")
-      |
-      v
-StrOutputParser
-      |
-      v
-plain-text answer
-```
-
-At application startup, `app.py` creates the retriever and generation chain once. For every non-empty question it performs four steps:
-
-1. **Retrieve once:** `retriever.invoke(question)` returns the top-k `Document` chunks.
-2. **Build context:** `format_docs()` joins their `page_content` into one string.
-3. **Generate:** the chain receives `{"context": context, "question": question}`.
-4. **Attribute sources:** the same retrieved Documents provide `metadata["source"]` and `metadata["page_label"]`; `Path(source).name` reduces the source path to a filename.
-
-Entering `exit` ends the loop. Empty input is ignored with a prompt to enter a question.
-
-## Why a new question still needs an embedding
-
-Ingestion precomputes embeddings only for document chunks. A new question is text, but Chroma compares vectors, so the question must also be embedded at query time:
-
-```text
-new question -> query vector -> similarity comparison -> closest stored vectors
-```
-
-This does not re-embed all PDF chunks. `load_vector_store()` reconnects to their persisted vectors and supplies the same embedding function for new queries. Using the same embedding model for both sides makes the comparison meaningful.
-
-## Core modules and objects
-
-### `src/document_loader.py`
-
-`load_documents(data_path)` uses `Path(data_path).rglob("*.pdf")`, so PDFs may be directly under `data/` or in subdirectories. Each `PyPDFLoader.load()` call normally returns one LangChain `Document` per page; results from all PDFs are extended into one list. If no PDFs exist, it prints a message and returns an empty list.
-
-A `Document` has two important parts:
-
-```text
-Document
-|-- page_content   actual extracted or chunked text
-`-- metadata       provenance such as source path and page information
-```
-
-### `src/text_splitter.py`
-
-`split_documents(documents)` constructs `RecursiveCharacterTextSplitter` from the configured size and overlap and calls `split_documents`. The recursive splitter tries progressively smaller separators, which generally preserves paragraphs and sentences better than arbitrary fixed cuts. Chunk Documents retain metadata from their parent page, enabling later attribution.
-
-### `src/vector_store.py`
-
-`get_embeddings()` returns `OllamaEmbeddings(model="nomic-embed-text")`.
-
-`create_vector_store(chunks)` uses:
-
-```python
-Chroma.from_documents(
-    documents=chunks,
-    embedding=embeddings,
-    collection_name="interview_assistant",
-    persist_directory="vector_db"
-)
-```
-
-`from_documents()` is the **indexing** operation: it reads the chunk Documents, embeds their text, and adds text, metadata, and vectors to the persistent collection.
-
-`load_vector_store()` uses the `Chroma(...)` constructor with the same collection name, persistence directory, and `embedding_function`. This is the **reuse/query** operation: it opens the existing collection without loading PDFs, splitting pages, or reinserting document chunks. The embedding function is needed to vectorize future questions.
-
-Do not repeatedly run `ingest.py` against the same persistent collection as a normal startup step. `Chroma.from_documents()` adds documents, and without stable IDs or a cleanup/update strategy, duplicate chunks may be inserted. Run ingestion:
-
-- initially, to create the database;
-- when intentionally adding/updating documents; or
-- when rebuilding the collection (with a deliberate cleanup/versioning process).
-
-### `src/retriever.py`
-
-`get_retriever()` loads Chroma and calls `vector_store.as_retriever(search_kwargs={"k": TOP_K})`. A Retriever is a standard interface that accepts a query and returns a list of Documents; here, `retriever.invoke(question)` performs vector similarity search with `k=3`.
-
-Top-k means **the k closest matches, not k guaranteed-relevant answers**. Chroma can still return three chunks for an unrelated question because some stored vectors are always closer than others. A future relevance threshold can reject results whose scores are not good enough.
-
-### `src/prompts.py`
-
-`INTERVIEW_PROMPT` is a `PromptTemplate` with `{context}` and `{question}` variables. It tells Llama to use only the context, avoid guessing or outside knowledge, answer in an interview-friendly structure, and return an exact fallback when evidence is absent.
-
-### `src/rag_chain.py`
-
-`format_docs(retrieved_docs)` extracts each `doc.page_content` and joins the chunks with two newlines. Metadata is not placed in the generation context; it remains available in `app.py` for source display.
-
-`create_generation_chain()` creates this LCEL pipeline:
-
-```python
-INTERVIEW_PROMPT | ChatOllama(model=LLM_MODEL) | StrOutputParser()
-```
-
-The input dictionary fills the prompt, Llama produces a chat response, and `StrOutputParser` returns only its text. This chain performs generation only; it does not retrieve documents.
-
-### Entry points and remaining files
-
-- `ingest.py`: orchestration for PDF loading, splitting, embedding, and storage.
-- `app.py`: interactive input loop, single retrieval, context creation, generation, and source display.
-- `src/__init__.py`: identifies the package; its current `__all__` exposes only the older `utils` module and is not required by the main flow.
-- `src/utils.py`: samples up to three `.txt` files; it is not imported by the current PDF pipeline.
-- `tests/test_smoke.py`: belongs to the earlier FastAPI scaffold and does not match the present console `app.py`.
-
-## Grounding and abstention
-
-RAG is not merely “ask the LLM after a search.” The retrieved chunks are inserted as controlled evidence, and the prompt limits the model to that evidence. If the answer is absent, the required response is:
+is answered from the retrieved passages, with the source PDF and page shown by the app. For a question not supported by retrieved context, the prompt requires:
 
 ```text
 The provided documents do not contain this information.
 ```
 
-This was tested with the out-of-document question:
+Actual answer wording and retrieved pages depend on the indexed PDFs and the local model. Similarity search still returns the closest chunks for an unrelated query; the prompt relies on the model to abstain based on their contents.
+
+## Design choices and trade-offs
+
+- **Local models:** embeddings and generation run through Ollama, avoiding a hosted-model API in this implementation; local runtime and model downloads are prerequisites.
+- **Separated indexing and querying:** `ingest.py` prepares the knowledge base, while the CLI and Streamlit app query it.
+- **Small overlapping chunks:** the 500-character size and 100-character overlap are fixed defaults intended to preserve nearby context; they have not been exposed as user settings.
+- **Persistent Chroma:** the store can be reused across runs. Streamlit adds uploaded chunks to the existing collection rather than rebuilding it.
+- **Single retrieval for answer and attribution:** the retrieved documents feed both generation context and source/evidence display.
+- **Prompt-based grounding:** instructions request abstention, but this is not a formal guarantee that the model will always follow them.
+
+## Limitations and possible next steps
+
+- There is no similarity-score threshold; top-k returns the closest available chunks even when they are weak matches.
+- Re-uploading a PDF can add duplicate chunks. There is no document deletion, deduplication, or update/version mechanism.
+- PDFs with scanned images or poor text extraction may yield little usable content; OCR is not implemented.
+- Evaluation uses four fixed cases and simple expected-term checks; it does not measure retrieval ranking quality, factual correctness comprehensively, latency, or cost.
+- `tests/test_smoke.py` imports a FastAPI `app` and `/ping` endpoint, but the current `app.py` is a console program and defines neither. The smoke test and `requirements.txt` therefore appear to belong to an earlier scaffold and need alignment before they can serve as current project checks.
+- The prompt requests a structured answer when evidence is present, but does not validate that every heading is returned.
+
+## Project structure
 
 ```text
-What is Kubernetes architecture?
+07-Interview-Assistant/
+├── app.py
+├── streamlit_app.py
+├── ingest.py
+├── evaluate.py
+├── evaluation_cases.json
+├── requirements.txt
+├── data/                         # Source PDFs
+├── vector_db/                    # Persistent Chroma store
+├── src/
+│   ├── config.py
+│   ├── document_loader.py
+│   ├── text_splitter.py
+│   ├── vector_store.py
+│   ├── retriever.py
+│   ├── prompts.py
+│   ├── rag_chain.py
+│   └── utils.py                  # Legacy text sample helper
+└── tests/
+    └── test_smoke.py             # Earlier FastAPI scaffold test
 ```
 
-Although top-3 retrieval still returned the three closest chunks, none supported an answer, so Llama abstained with the exact fallback. Interview takeaway: **retrieval supplies candidate evidence; grounding controls how the model may use it.**
+## LinkedIn-ready summary
 
-## Source attribution and single retrieval
+**Built a local AI Interview Preparation Assistant using LangChain, Ollama, Chroma, and Streamlit.** The application ingests PDF study notes, splits and embeds their content into a persistent vector database, retrieves relevant passages for user questions, and generates context-grounded interview answers with a local LLM. It also surfaces source pages and retrieved evidence for transparency, supports incremental PDF uploads, and includes a small evaluation harness for retrieval metadata, expected concepts, and abstention behavior.
 
-`PyPDFLoader` adds provenance metadata, and splitting carries it into chunks. After generation, `app.py` prints source filename and `page_label` from each retrieved Document.
-
-The retrieved list is saved in `retrieved_docs` and reused for both context and citations. This **single-retrieval design** avoids a second similarity search that could waste work or return a different set of chunks. Current output may repeat a source/page when multiple top-k chunks originate there; deduplication is a future improvement.
-
-## Why retrieval and generation are separate
-
-The application intentionally does not hide everything in one opaque chain. Separation makes failures easier to inspect:
-
-```text
-Wrong/missing evidence?  Inspect retrieved_docs and retrieval settings.
-Good evidence, bad answer? Inspect format_docs, prompt, or LLM output.
-Wrong source display?     Inspect Document metadata.
-```
-
-It also prevents accidental double retrieval and makes each learning stage visible. The generation chain can be tested with manually supplied context, while retrieval can be tested without invoking Llama.
-
-## Setup and running from PowerShell
-
-Prerequisites: Python, Ollama running locally, and the two local models.
-
-```powershell
-cd F:\Work\AI-Engineer-Bootcamp\07-Interview-Assistant
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-ollama pull nomic-embed-text
-ollama pull llama3.2
-```
-
-Setup note: the current `requirements.txt` is inherited from an earlier scaffold and does not explicitly declare all packages imported by this implementation. The code directly depends on `langchain-community`, `langchain-text-splitters`, `langchain-ollama`, `langchain-chroma`, `chromadb`, and a PDF backend such as `pypdf`. If imports fail, install those packages in the activated environment and then align `requirements.txt` with the verified environment.
-
-Place PDFs under `data/`, then build the database once:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-python .\ingest.py
-```
-
-Start the interactive assistant:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-python .\app.py
-```
-
-Do not use the older README commands `uvicorn app:app --reload` or `python ingest.py --source data/`: the current application is a console program, and `ingest.py` accepts no command-line arguments.
-
-## Current limitations and next improvements
-
-1. **Retrieval relevance threshold:** request similarity scores and abstain before generation when no chunk meets a tuned threshold.
-2. **Deduplicated source display:** show each filename/page once while preserving retrieval order.
-3. **Header/footer cleanup:** remove repeated PDF noise before or during chunking to improve retrieval quality.
-4. **Automated RAG evaluation:** maintain answerable and unanswerable questions and measure retrieval, grounding, correctness, and source quality.
-5. **Document update/versioning:** use stable chunk IDs, collection versions, or explicit rebuilds so updates do not create duplicates.
-6. **Test alignment:** replace the obsolete FastAPI smoke test with tests for loading, splitting, retrieval, formatting, grounding, and metadata.
-
-## Interview-ready recap
-
-- **What is RAG?** Retrieve relevant external text and provide it as context to an LLM so answers are grounded in a knowledge source.
-- **Why chunk documents?** Embedding and retrieving smaller semantic units gives more focused context than whole PDFs or pages.
-- **Why overlap chunks?** It preserves information that crosses a chunk boundary.
-- **What does Chroma store?** Embedding vectors plus their chunk text and metadata—not the loader or splitting procedure.
-- **Indexing versus querying?** Indexing prepares knowledge by embedding document chunks; querying embeds a new question and uses the stored knowledge.
-- **Why embed every question?** Similarity search compares the question vector with stored chunk vectors.
-- **Does top-k guarantee relevance?** No. It returns the k closest items even when all are weak matches.
-- **Why ground and abstain?** To prevent unsupported answers when retrieved evidence is missing or irrelevant.
-- **Why retrieve once?** The exact evidence used for the answer is also used for source attribution, avoiding cost and inconsistency.
-- **Why separate retrieval from generation?** It makes evidence selection and answer generation independently observable, testable, and debuggable.
-
-Final memory triggers:
-
-```text
-ingest.py = PDF -> Chunk -> Embed -> Store
-app.py    = Question -> Retrieve -> Context -> LLM -> Answer
-INDEXING  = Prepare knowledge
-QUERYING  = Use knowledge
-```
-
----
-
-# Streamlit UI: Upload, Incremental Indexing, and RAG Query Flow
-
-The project now includes a Streamlit interface in `streamlit_app.py`. It adds browser-based PDF upload, incremental indexing, index-status checks, question answering, source attribution, and retrieved-evidence inspection on top of the existing RAG backend.
-
-The UI is a presentation and controller layer. It coordinates the workflow and displays results, but it does **not** reimplement the core RAG logic. Document splitting, vector-store operations, prompting, context formatting, and answer generation continue to use the existing modules under `src/`.
-
-## Streamlit dependency and run command
-
-Install the project dependencies, ensure Ollama is running with `nomic-embed-text` and `llama3.2` available, and start the UI from the project directory:
-
-```powershell
-cd F:\Work\AI-Engineer-Bootcamp\07-Interview-Assistant
-.\.venv\Scripts\Activate.ps1
-pip install streamlit
-python -m streamlit run streamlit_app.py
-```
-
-If `streamlit` is already declared in `requirements.txt`, `pip install -r requirements.txt` installs it with the other dependencies. The entry-point filename is exactly `streamlit_app.py`.
-
-## Complete UI flow
-
-The end-to-end user journey is:
-
-```text
-Upload one or more PDFs
-        |
-        v
-Click "Upload & Index"
-        |
-        v
-Save each uploaded file into data/
-        |
-        v
-PyPDFLoader
-        |
-        v
-Page-level LangChain Document objects
-        |
-        v
-RecursiveCharacterTextSplitter
-        |
-        v
-Overlapping Document chunks
-        |
-        v
-OllamaEmbeddings(model="nomic-embed-text")
-        |
-        v
-Create persistent Chroma on the first upload
-or add chunks to the existing Chroma collection
-        |
-        v
-Index status becomes available
-        |
-        v
-Enter a user question and click "Get Answer"
-        |
-        v
-Retriever similarity search (top-k = 3)
-        |
-        v
-Three retrieved Document chunks
-        |
-        v
-format_docs(retrieved_docs)
-        |
-        v
-Context string
-        |
-        v
-Grounded PromptTemplate (context + question)
-        |
-        v
-ChatOllama(model="llama3.2", temperature=0)
-        |
-        v
-StrOutputParser
-        |
-        v
-Structured answer
-        |
-        +--> Sources: filename + page metadata
-        |
-        `--> View Retrieved Evidence: chunks + metadata
-```
-
-This is one connected RAG flow: the uploaded documents become searchable knowledge, the question selects the most relevant stored chunks, and the LLM receives those chunks as its allowed context.
-
-## UI architecture
-
-```text
-+------------------------------------------------------------------+
-|                    Streamlit presentation layer                   |
-|                         streamlit_app.py                          |
-|                                                                  |
-|  PDF uploader | Upload & Index | Index Status | Question/Answer  |
-|  Metrics      | Sources        | Retrieved Evidence expander     |
-+------------------------------+-----------------------------------+
-                               |
-                               | calls existing backend functions
-                               v
-+------------------------------------------------------------------+
-|                    Existing src backend modules                  |
-|                                                                  |
-|  src/config.py                                                   |
-|    paths, chunk settings, TOP_K, model names                     |
-|                                                                  |
-|  src/text_splitter.py                                            |
-|    split_documents() -> RecursiveCharacterTextSplitter           |
-|                                                                  |
-|  src/vector_store.py                                             |
-|    create_vector_store()                                         |
-|    load_vector_store()                                           |
-|    add_documents_to_vector_store()                               |
-|    OllamaEmbeddings(nomic-embed-text) + persistent Chroma        |
-|                                                                  |
-|  src/rag_chain.py                                                |
-|    format_docs() + create_generation_chain()                     |
-|                                                                  |
-|  src/prompts.py                                                  |
-|    grounded INTERVIEW_PROMPT / PromptTemplate                    |
-+-----------------------+---------------------+--------------------+
-                        |                     |
-                        v                     v
-              +------------------+   +------------------+
-              | Persistent Chroma|   | Ollama llama3.2  |
-              | vector_db/       |   | answer generation|
-              +------------------+   +------------------+
-```
-
-`streamlit_app.py` owns UI events and display state. The backend modules own the reusable RAG operations. This separation avoids having one implementation for the CLI and another implementation for the browser UI. It also keeps the learning architecture clear: the interface controls the sequence, while the backend performs splitting, embedding, persistence, retrieval, prompt construction, and parsing.
-
-## Three project entry points
-
-### 1. `ingest.py` - manual/offline initial indexing
-
-Use `ingest.py` when PDFs have already been placed in `data/` and you want to build the vector index as a separate preparation step:
-
-```powershell
-python .\ingest.py
-```
-
-Its role is offline knowledge preparation:
-
-```text
-data/*.pdf -> load -> split -> embed -> create persistent Chroma
-```
-
-This remains useful for an initial batch build, scripted ingestion, demonstrations of the indexing phase, and environments where document preparation should be separate from question answering.
-
-### 2. `app.py` - CLI query assistant
-
-Use `app.py` for terminal-based question answering against an existing index:
-
-```powershell
-python .\app.py
-```
-
-Its primary role is the query phase:
-
-```text
-question -> retrieve -> format context -> grounded generation -> answer + sources
-```
-
-The CLI is useful for learning, debugging, and testing the RAG pipeline without a browser interface.
-
-### 3. `streamlit_app.py` - UI upload/index/query assistant
-
-Use `streamlit_app.py` for the complete interactive experience:
-
-```powershell
-python -m streamlit run streamlit_app.py
-```
-
-It combines three user-facing capabilities in one screen:
-
-1. Upload and index one or more PDFs.
-2. Check whether the persistent Chroma index is available.
-3. Ask a question and inspect the answer, source metadata, and retrieved evidence.
-
-All three entry points share the same project terminology and persistent `vector_db/`; they provide different ways to enter the same overall system rather than three unrelated applications.
-
-## Upload and indexing program flow
-
-```text
-User selects one or more PDF files
-                  |
-                  v
-        Streamlit file_uploader
-                  |
-                  v
-       User clicks Upload & Index
-                  |
-                  v
-        index_uploaded_files(files)
-                  |
-                  v
-       Create data/ if it is missing
-                  |
-                  v
-       Save each file as data/<name>.pdf
-                  |
-                  v
-         PyPDFLoader(destination)
-                  |
-                  v
-       loader.load() -> page Documents
-                  |
-                  v
-        combine all uploaded pages
-                  |
-                  v
-         split_documents(pages)
-                  |
-                  v
- RecursiveCharacterTextSplitter -> chunks
-                  |
-                  v
-       Does persistent vector_db/ exist?
-             /                   \
-           no                     yes
-           |                       |
-           v                       v
- create_vector_store(chunks)  add_documents_to_vector_store(chunks)
-           |                       |
-           +-----------+-----------+
-                       |
-                       v
-     Ollama embeds new chunks with nomic-embed-text
-                       |
-                       v
-          Chroma persists text, vectors, metadata
-                       |
-                       v
-  UI shows pages processed and new chunks indexed
-```
-
-### Incremental indexing behavior
-
-On the first successful upload, no persistent database exists, so `create_vector_store(chunks)` creates the Chroma collection under `vector_db/`.
-
-On later uploads, the application does **not** delete or rebuild `vector_db/`. It calls `add_documents_to_vector_store(chunks)`, which loads the existing collection and adds embeddings for the newly uploaded chunks. Previously indexed PDFs remain available, so retrieval can search across both the older and newer material.
-
-This approach is especially important under Streamlit on Windows. Chroma database files may remain open while the Streamlit process is running, and Windows can reject attempts to delete files that are in use. Incremental addition avoids unsafe or unreliable directory deletion and supports the intended expanding knowledge base.
-
-Current V1 limitation: uploading the same PDF repeatedly may add duplicate chunks. Saving a file under the same filename does not automatically remove its earlier vectors from Chroma. A future version should use a document hash, ingestion registry, stable chunk IDs, and/or explicit document versioning so the system can detect unchanged files, replace updated documents safely, and prevent duplicates.
-
-## Why uploads and questions both require embeddings
-
-Embeddings are used twice, for different objects and at different times:
-
-```text
-Indexing time: document chunk text -> embedding vector -> stored in Chroma
-Query time:    user question      -> embedding vector -> compared in Chroma
-```
-
-New uploads require embeddings because Chroma performs semantic similarity search over vectors. Merely saving a PDF in `data/` makes the file available on disk but does not make its meaning searchable. `PyPDFLoader` extracts text, the splitter creates retrieval-sized chunks, and `nomic-embed-text` converts each new chunk into a numeric vector that Chroma can store and compare.
-
-Every question also requires an embedding. The retriever uses the same embedding model to convert the question into the same vector space, compares that query vector with stored chunk vectors, and returns the three closest chunks (`TOP_K = 3`). The question embedding is used for search; it is not added to the document collection as new knowledge.
-
-## Metadata preservation and source attribution
-
-`PyPDFLoader` creates page-level `Document` objects containing two important parts:
-
-```text
-Document
-|- page_content: extracted text from the PDF page
-`- metadata: source path, page/page_label, and related provenance
-```
-
-`RecursiveCharacterTextSplitter.split_documents()` splits `Document` objects rather than plain strings. As a result, each child chunk retains the parent page's metadata. Chroma stores the chunk text, its embedding, and this metadata together. When retrieval returns a chunk, the application still knows which PDF and page produced it.
-
-That surviving metadata enables the UI to display:
-
-- the source filename using `Path(source).name`;
-- the page value from `page_label`;
-- the exact retrieved text associated with that metadata.
-
-The answer and the attribution use the same `retrieved_docs` list. This keeps the visible sources and evidence aligned with the context supplied to the model.
-
-## Question and query program flow
-
-```text
-User enters a question and clicks Get Answer
-                    |
-                    v
-       Validate non-empty question and index
-                    |
-                    v
-             load_vector_store()
-                    |
-                    v
-   as_retriever(search_kwargs={"k": 3})
-                    |
-                    v
-          retriever.invoke(question)
-                    |
-                    v
- Ollama embeds question with nomic-embed-text
-                    |
-                    v
-      Chroma similarity search over vectors
-                    |
-                    v
-        top three retrieved Documents
-                    |
-          +---------+----------+
-          |                    |
-          v                    v
- format_docs() joins     retain metadata for
- page_content values     sources and evidence
-          |                    |
-          v                    |
-      context string           |
-          |                    |
-          v                    |
- INTERVIEW_PROMPT(context, question)
-          |
-          v
- ChatOllama(model="llama3.2", temperature=0)
-          |
-          v
-     StrOutputParser
-          |
-          v
-   structured answer
-          |
-          +--------------------+
-          |
-          v
- Answer + Sources + View Retrieved Evidence
-```
-
-The prompt is grounded: it instructs the model to answer only from the supplied context and to return the exact fallback sentence when the documents do not contain enough information. Retrieval and generation remain separate, so the selected evidence can be inspected before or alongside the generated response.
-
-## Index status in the UI
-
-The UI checks `vector_db/` through `is_index_available()`. V1 considers the index available when the directory exists and contains at least one item.
-
-There are two status surfaces:
-
-- **Sidebar status:** always shows the configured LLM, embedding model, vector database, top-k value, and either “Vector index is available” or “Vector index is not available.” This gives an immediate readiness signal.
-- **Check Index Status button:** performs an explicit on-demand check. When ready, it confirms that Chroma can be used for questions and displays the vector store, top-k, embedding model, and LLM. When unavailable, it tells the user to upload and index at least one PDF.
-
-This is a lightweight readiness check, not a full collection audit. It does not currently count all indexed documents or chunks, detect duplicates, verify every stored vector, or test model connectivity.
-
-## Answer, sources, and evidence display
-
-When relevant context is available, the grounded prompt requests an interview-friendly response with four parts:
-
-1. **Definition** - a direct description of the concept.
-2. **Simple Explanation** - an easy-to-understand interpretation.
-3. **Interview Answer** - a concise response suitable for speaking in an interview.
-4. **Key Points** - the main facts to remember and revise.
-
-Below the answer, **Sources** displays the PDF filename and page metadata for retrieved documents. Duplicate filename/page combinations are suppressed in the source list, while retrieval order is preserved.
-
-The **View Retrieved Evidence** expander provides deeper inspection. For each of the top-k results, it shows:
-
-- chunk number;
-- source filename;
-- page metadata;
-- retrieved chunk text.
-
-This evidence view is valuable for checking whether retrieval found the right material, whether the answer is grounded, and whether source attribution points back to the correct document. Multiple chunks from the same filename/page may still appear in the evidence expander because each retrieved chunk is shown separately.
-
-## Concrete tested example
-
-The UI was tested with the existing Java 8 material and an uploaded Generics PDF, including `15. Generics.pdf`. The question was:
-
-```text
-what is generics
-```
-
-The system successfully completed retrieval and generation and displayed the structured answer. The verification goal for incremental indexing is to confirm that **Sources** or **View Retrieved Evidence** includes the Generics PDF when its content is retrieved. No fixed page number is documented here because the observed page value was not supplied for this README update.
-
-This test demonstrates the intended multi-document behavior:
-
-```text
-Existing Java 8 PDF chunks + newly added Generics PDF chunks
-                            |
-                            v
-                 one persistent Chroma collection
-                            |
-                            v
-                   question: what is generics
-                            |
-                            v
-               top-k evidence across all indexed PDFs
-                            |
-                            v
-        grounded answer + filename/page attribution + evidence
-```
-
-## Interview-ready explanation
-
-> “I built a Streamlit controller and presentation layer on top of an existing local RAG backend. A user can upload one or more PDFs, which are saved under `data/`, loaded page by page with `PyPDFLoader`, and split into overlapping chunks with `RecursiveCharacterTextSplitter`. New chunks are embedded with Ollama's `nomic-embed-text` model and either create the persistent Chroma collection on the first run or are added incrementally on later uploads. For a question, the same embedding model converts the query into a vector, Chroma retrieves the top three relevant chunks, and `format_docs` converts their text into context. A grounded `PromptTemplate` sends the context and question to `ChatOllama` using `llama3.2`, and `StrOutputParser` returns the final answer. The UI also exposes filename/page sources and the exact retrieved chunks. Metadata survives loading, splitting, storage, and retrieval, which makes attribution possible. I kept the UI thin and reused the `src` modules instead of duplicating the RAG logic.”
-
-Key design decisions to mention in an interview:
-
-- **Thin UI layer:** Streamlit coordinates backend functions and renders results; reusable RAG logic remains under `src/`.
-- **Persistent vector store:** embeddings survive application restarts in `vector_db/`.
-- **Incremental updates:** later uploads add new chunks instead of deleting an open Chroma database.
-- **Same embedding space:** both stored document chunks and incoming questions use `nomic-embed-text`.
-- **Single retrieved evidence set:** the same top-k `Document` objects supply the LLM context, source list, and evidence view.
-- **Grounded generation:** the prompt restricts answers to retrieved context and defines an abstention response.
-- **Traceability:** inherited metadata connects every retrieved chunk to its source PDF and page.
-- **Known V1 trade-off:** repeated uploads can create duplicate vectors until hashing/registry/versioning is added.
-
-## Memory triggers
-
-```text
-UI ROLE
-Streamlit = Upload + Control + Status + Display
-src/      = Split + Embed + Store + Retrieve + Prompt + Generate
-
-UPLOAD PATH
-PDF -> data/ -> PyPDFLoader -> page Documents -> chunks
-    -> nomic-embed-text -> create/add Chroma
-
-QUERY PATH
-Question -> query embedding -> Chroma top-k=3 -> retrieved Documents
-         -> format_docs -> context -> grounded prompt -> llama3.2
-         -> StrOutputParser -> structured answer
-
-ATTRIBUTION
-Loader metadata -> splitter preserves it -> Chroma stores it
-                -> retriever returns it -> UI shows filename/page/evidence
-
-ENTRY POINTS
-ingest.py        = manual/offline initial indexing
-app.py           = CLI query assistant
-streamlit_app.py = UI upload + incremental index + query assistant
-
-V1 UPDATE RULE
-First upload      = create persistent Chroma
-Later uploads     = add new documents to existing collection
-Repeated same PDF = possible duplicate chunks (future hash/registry/versioning)
-```
+**Highlights:** Python · Retrieval-Augmented Generation (RAG) · LangChain/LCEL · Ollama · ChromaDB · Streamlit · PDF ingestion · Prompt grounding · Source attribution · Evaluation
